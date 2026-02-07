@@ -1,0 +1,1102 @@
+﻿===== FILE: C:\Users\Sriram\Downloads\app\app\docker-compose.yml =====
+version: '3'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: db
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+  elasticsearch:
+    image: elasticsearch:8.11.1
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+  app:
+    build: .
+    depends_on:
+      - postgres
+      - redis
+      - elasticsearch
+      - kafka
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./uploads:/app/uploads  # For file storage persistence
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\AppApplication.java =====
+package com.content_indexing.app;
+
+import jakarta.annotation.PostConstruct;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.data.elasticsearch.repository.config.EnableElasticsearchRepositories;
+
+import java.util.TimeZone;
+
+@SpringBootApplication
+@EnableElasticsearchRepositories(
+        basePackages = "com.content_indexing.app.repository"
+)
+public class AppApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(AppApplication.class, args);
+	}
+    @PostConstruct
+    public void init() {
+        // Fixes the "Asia/Calcutta" vs "Asia/Kolkata" issue
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+
+        // Alternatively, use UTC to avoid all daylight saving/region issues:
+        // TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    }
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\config\ElasticsearchConfig.java =====
+package com.content_indexing.app.config;
+
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.json.jackson.JacksonJsonpMapper;
+import co.elastic.clients.transport.ElasticsearchTransport;
+import co.elastic.clients.transport.rest_client.RestClientTransport;
+import org.apache.http.HttpHost;
+import org.elasticsearch.client.RestClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ElasticsearchConfig {
+
+    @Bean
+    RestClient restClient() {
+        return RestClient.builder(
+                new HttpHost("localhost", 9200, "http")
+        ).build();
+    }
+
+    @Bean
+    ElasticsearchTransport transport(RestClient restClient) {
+        return new RestClientTransport(
+                restClient,
+                new JacksonJsonpMapper()
+        );
+    }
+
+    @Bean
+    ElasticsearchClient elasticsearchClient(ElasticsearchTransport transport) {
+        return new ElasticsearchClient(transport);
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\config\JacksonConfig.java =====
+package com.content_indexing.app.config;
+
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class JacksonConfig {
+
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\config\SecurityConfig.java =====
+package com.content_indexing.app.config;
+
+import com.content_indexing.app.security.JwtAuthenticationFilter;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+public class SecurityConfig {
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            JwtAuthenticationFilter jwtAuthenticationFilter
+    ) throws Exception {
+
+        http
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                )
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/auth/**").permitAll()
+                        .anyRequest().authenticated()
+                )
+                .addFilterBefore(
+                        jwtAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class
+                );
+
+        return http.build();
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\config\WebConfig.java =====
+package com.content_indexing.app.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.io.File;
+
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/uploads/**")
+                .addResourceLocations("file:" + new File("uploads/").getAbsolutePath() + "/");
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\controller\AuthController.java =====
+package com.content_indexing.app.controller;
+
+import com.content_indexing.app.dto.TokenDto;
+import com.content_indexing.app.security.JwtUtils;
+import com.content_indexing.app.entity.UserEntity;
+import com.content_indexing.app.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/auth")
+@RequiredArgsConstructor
+
+public class AuthController {
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtils jwtUtils;
+    @PostMapping("/register")
+
+    public ResponseEntity<?> register(@RequestBody UserEntity user){
+               if(userRepository.findByUsername(user.getUsername()).isPresent()){
+                   return ResponseEntity.badRequest().body("Username already exists");
+               }
+               user.setPassword(passwordEncoder.encode(user.getPassword()));
+               userRepository.save(user);
+               return ResponseEntity.ok().build();
+    }
+    @PostMapping("/login")
+    public ResponseEntity<TokenDto> login(@RequestBody UserEntity credentials){
+        UserEntity user = userRepository.findByUsername(credentials.getUsername()).orElseThrow(() -> new RuntimeException("User not found"));
+        if (passwordEncoder.matches(credentials.getPassword(), user.getPassword())) {
+            String token = jwtUtils.generateToken(user.getUsername());
+            return ResponseEntity.ok(new TokenDto(token));
+        }
+        return ResponseEntity.status(401).build();
+    }
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\controller\MetadataController.java =====
+package com.content_indexing.app.controller;
+
+import com.content_indexing.app.dto.ContentMetadataCreateDto;
+import com.content_indexing.app.dto.ContentMetadataResponseDto;
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import com.content_indexing.app.service.MetadataService;
+import com.content_indexing.app.service.RankingService;
+import com.content_indexing.app.service.SearchService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/metadata")
+@RequiredArgsConstructor
+public class MetadataController {
+
+    private final MetadataService service;
+    private final SearchService searchService;
+    private final RankingService rankingService;
+    private final KafkaTemplate<String, ContentMetadataEntity> kafkaTemplate;
+    private final ObjectMapper objectMapper;
+
+    // âœ… CREATE / UPDATE (multipart + JSON)
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RateLimiter(name = "apiRateLimiter")
+    public ResponseEntity<?> create(
+            @RequestPart("metadata") String metadataJson,
+            @RequestPart(value = "file", required = false) MultipartFile file,
+            Authentication auth
+    ) throws IOException, NoSuchAlgorithmException {
+
+        // Convert JSON string â†’ DTO
+        ContentMetadataCreateDto dto =
+                objectMapper.readValue(metadataJson, ContentMetadataCreateDto.class);
+
+        if (dto.getMirrors() == null) {
+            dto.setMirrors(new ArrayList<>());
+        }
+
+        // Handle file upload (optional)
+        if (file != null && !file.isEmpty()) {
+            String filename = UUID.randomUUID() + "_" + file.getOriginalFilename();
+            Path path = Paths.get("uploads", filename);
+            Files.createDirectories(path.getParent());
+            file.transferTo(path);
+
+            // Add local mirror
+            dto.getMirrors().add("http://localhost:8080/uploads/" + filename);
+
+            // Compute hash if missing
+            if (dto.getHash() == null || dto.getHash().isBlank()) {
+                dto.setHash(computeSha256(path.toFile()));
+            }
+        }
+
+        if (dto.getHash() == null || dto.getHash().isBlank()) {
+            throw new IllegalArgumentException("Hash is required if no file is uploaded");
+        }
+
+        service.createOrUpdate(dto, auth);
+        return ResponseEntity.ok().build();
+    }
+
+    // âœ… VIEW METADATA
+    @GetMapping("/{hash}")
+    @RateLimiter(name = "apiRateLimiter")
+    public ContentMetadataResponseDto view(@PathVariable String hash) {
+        ContentMetadataResponseDto dto = searchService.getByHash(hash);
+        rankingService.incrementViews(hash);
+
+        // Publish async view event
+        ContentMetadataEntity entity = new ContentMetadataEntity();
+        entity.setHash(hash);
+        kafkaTemplate.send("content-events", "ContentViewed", entity);
+
+        return dto;
+    }
+
+    // ðŸ” SHA-256 helper
+    private String computeSha256(File file) throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] buffer = new byte[8192];
+        int bytesRead;
+
+        try (var fis = Files.newInputStream(file.toPath())) {
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                digest.update(buffer, 0, bytesRead);
+            }
+        }
+
+        byte[] hashBytes = digest.digest();
+        StringBuilder sb = new StringBuilder();
+        for (byte b : hashBytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\controller\ModerationController.java =====
+package com.content_indexing.app.controller;
+
+
+
+import com.content_indexing.app.dto.ReportAbuseDto;
+import com.content_indexing.app.service.ModerationService;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/moderation")
+@RequiredArgsConstructor
+public class ModerationController {
+
+    private final ModerationService service;
+
+    @PostMapping("/report")
+    @RateLimiter(name = "apiRateLimiter")
+    public ResponseEntity<?> report(@RequestBody ReportAbuseDto dto) {
+        service.reportAbuse(dto);
+        return ResponseEntity.ok().build();
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\controller\SearchController.java =====
+package com.content_indexing.app.controller;
+
+
+import com.content_indexing.app.dto.ContentMetadataResponseDto;
+import com.content_indexing.app.dto.SearchQueryDto;
+import com.content_indexing.app.service.SearchService;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/search")
+@RequiredArgsConstructor
+public class SearchController {
+
+    private final SearchService service;
+
+    @PostMapping
+    @RateLimiter(name = "apiRateLimiter")
+    public List<ContentMetadataResponseDto> search(@RequestBody SearchQueryDto query) {
+        return service.search(query);
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\dto\ContentMetadataCreateDto.java =====
+package com.content_indexing.app.dto;
+
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+public class ContentMetadataCreateDto {
+    private String title;
+    private List<String> mirrors;
+    private String hash;
+    private List<String> tags;
+
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\dto\ContentMetadataResponseDto.java =====
+package com.content_indexing.app.dto;
+
+import lombok.Data;
+
+import java.util.List;
+
+
+@Data
+public class ContentMetadataResponseDto{
+    private String hash;
+    private String title;
+    private List<String> tags;
+    private List<String> mirrors;
+    private long views = 0;
+    private double popularity = 0.0;
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\dto\ReportAbuseDto.java =====
+package com.content_indexing.app.dto;
+
+import lombok.Data;
+
+@Data
+public class ReportAbuseDto {
+    private String contentHash;
+    private String reason;
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\dto\SearchQueryDto.java =====
+package com.content_indexing.app.dto;
+
+import lombok.Data;
+
+@Data
+public class SearchQueryDto {
+    private String query;
+    private String filters;
+    private int page = 1;
+    private int size = 10;
+    private String sort = "relevance";
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\dto\TokenDto.java =====
+package com.content_indexing.app.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class TokenDto {
+    private String token;
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\entity\ContentMetadataEntity.java =====
+package com.content_indexing.app.entity;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+
+@Entity
+@Table(name = "content_metadata")
+@Data
+public class ContentMetadataEntity {
+    @Id
+    private String hash;
+    private String title;
+    @ElementCollection
+    private List<String> mirrors;
+    @ElementCollection
+    private List<String> tags;
+
+    @Column(columnDefinition = "uuid")
+    private UUID submitterId;
+
+    private Instant createdAt = Instant.now();
+
+    private double trustScore = 1.0;
+
+    private double popularity = 0.0;
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\entity\UserEntity.java =====
+package com.content_indexing.app.entity;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+import java.util.UUID;
+
+@Entity
+@Table(name = "users")
+@Data
+public class UserEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(unique = true, nullable = false)
+    private String username;
+
+    @Column(nullable = false)
+    private String password;
+
+    private String role = "USER";
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\entity\search\ContentSearchDocument.java =====
+package com.content_indexing.app.entity.search;
+
+import lombok.Data;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.elasticsearch.annotations.Document;
+
+import java.time.Instant;
+import java.util.List;
+
+@Data
+@Document(indexName = "content")
+public class ContentSearchDocument {
+
+    @Id
+    private String hash;
+
+    private String title;
+    private List<String> tags;
+    private List<String> mirrors;
+
+    private double trustScore;
+    private double popularity;
+    private Instant createdAt;
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\repository\ContentMetadataRepository.java =====
+package com.content_indexing.app.repository;
+
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ContentMetadataRepository
+        extends JpaRepository<ContentMetadataEntity, String> {
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\repository\ContentSearchRepository.java =====
+package com.content_indexing.app.repository;
+
+import com.content_indexing.app.entity.search.ContentSearchDocument;
+import org.springframework.data.elasticsearch.repository.ElasticsearchRepository;
+
+public interface ContentSearchRepository
+        extends ElasticsearchRepository<ContentSearchDocument, String> {
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\repository\UserRepository.java =====
+package com.content_indexing.app.repository;
+
+import com.content_indexing.app.entity.UserEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+public interface UserRepository extends JpaRepository<UserEntity, UUID> {
+    Optional<UserEntity> findByUsername(String username);
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\security\JwtAuthenticationFilter.java =====
+package com.content_indexing.app.security;
+
+import com.content_indexing.app.entity.UserEntity;
+import com.content_indexing.app.repository.UserRepository;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+import java.util.Collections;
+
+@Component
+@RequiredArgsConstructor
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private final JwtUtils jwtUtils;
+    private final UserRepository userRepository;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+        String authHeader = request.getHeader("Authorization");
+
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            try {
+                String username = jwtUtils.extractUsername(token);
+                if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+                    UserEntity user = userRepository.findByUsername(username).orElse(null);
+                    if (user != null && jwtUtils.validateToken(token, username)) {
+                        UsernamePasswordAuthenticationToken authToken =
+                                new UsernamePasswordAuthenticationToken(
+                                        user,
+                                        null,
+                                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + user.getRole()))
+                                );
+                        SecurityContextHolder.getContext().setAuthentication(authToken);
+                    }
+                }
+            } catch (Exception e) {
+                // Invalid token - continue without authentication
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\security\JwtUtils.java =====
+package com.content_indexing.app.security;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+import java.util.Date;
+
+@Component
+public class JwtUtils {
+
+    @Value("${security.jwt.secret}")
+    private String secret;
+
+    @Value("${security.jwt.expiration}")
+    private long expiration;
+
+    private SecretKey getSigningKey() {
+        byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    public String generateToken(String username) {
+        return Jwts.builder()
+                .setSubject(username)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + expiration))
+                .signWith(getSigningKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    public String extractUsername(String token) {
+        return extractClaims(token).getSubject();
+    }
+
+    public boolean validateToken(String token, String username) {
+        String extractedUsername = extractUsername(token);
+        return extractedUsername.equals(username) && !isTokenExpired(token);
+    }
+
+    private Claims extractClaims(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(getSigningKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractClaims(token).getExpiration().before(new Date());
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\security\SecurityConfig.java =====
+// This file should be deleted - SecurityConfig is now in com.content_indexing.app.config package
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\EventProcessingService.java =====
+package com.content_indexing.app.service;
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import com.content_indexing.app.repository.ContentSearchRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class EventProcessingService {
+
+    private final ContentSearchRepository searchRepository;
+    private final RankingService rankingService;
+    private final ModerationService moderationService;
+    private final SearchMapper mapper;// Added for reports
+
+    @KafkaListener(topics = "content-events", groupId = "event-processor")
+    public void processEvent(String key, ContentMetadataEntity event) {
+
+        switch (key) {
+            case "ContentSubmitted", "ContentUpdated" ->
+                    searchRepository.save(mapper.toDocument(event));
+
+            case "ContentViewed" ->
+                    rankingService.incrementViews(event.getHash());
+
+            case "ContentReported" ->
+                    moderationService.handleReport(event);
+
+            case "ContentRemoved" ->
+                    searchRepository.deleteById(event.getHash());
+        }
+    }
+
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\MetadataService.java =====
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.dto.ContentMetadataCreateDto;
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import com.content_indexing.app.entity.UserEntity;
+import com.content_indexing.app.repository.ContentMetadataRepository;
+import com.content_indexing.app.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class MetadataService {
+    private final ContentMetadataRepository repository;
+    private final KafkaTemplate<String, ContentMetadataEntity> kafkaTemplate;
+    private final UserRepository userRepository;
+
+    public void createOrUpdate(ContentMetadataCreateDto dto, Authentication auth) {
+        UserEntity user = userRepository
+                .findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        ContentMetadataEntity entity = repository.findById(dto.getHash()).orElse(new ContentMetadataEntity());
+        entity.setHash(dto.getHash());
+        entity.setTitle(dto.getTitle());
+        entity.setTags(dto.getTags());
+        entity.setMirrors(dto.getMirrors());
+        entity.setSubmitterId(user.getId());
+        repository.save(entity);
+        kafkaTemplate.send("content-events", "ContentSubmitted", entity);
+
+
+    }
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\ModerationService.java =====
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.dto.ReportAbuseDto;
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import com.content_indexing.app.repository.ContentMetadataRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class ModerationService {
+
+    private final ContentMetadataRepository repository;
+    private final KafkaTemplate<String, ContentMetadataEntity> kafkaTemplate;
+
+    public void reportAbuse(ReportAbuseDto dto) {
+        ContentMetadataEntity entity = repository.findById(dto.getContentHash()).orElseThrow(() -> new RuntimeException("Content not found"));
+        // Logic for trust score adjustment (e.g., based on reason)
+        entity.setTrustScore(entity.getTrustScore() - 0.1);  // Simple decrement
+        repository.save(entity);
+
+        kafkaTemplate.send("content-events", "ContentReported", entity);
+    }
+
+    public void handleReport(ContentMetadataEntity entity) {
+        // Additional async moderation logic, e.g., if trustScore < 0.5, remove or de-rank
+        if (entity.getTrustScore() < 0.5) {
+            kafkaTemplate.send("content-events", "ContentRemoved", entity);
+        }
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\RankingService.java =====
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import com.content_indexing.app.repository.ContentMetadataRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.Optional;
+
+@Service
+@RequiredArgsConstructor
+public class RankingService {
+
+    private final ContentMetadataRepository contentMetadataRepository;
+    private final StringRedisTemplate redisTemplate;
+
+    private static final String VIEWS_KEY_PREFIX = "content:views:";
+
+    public void incrementViews(String hash) {
+        redisTemplate.opsForValue().increment(VIEWS_KEY_PREFIX + hash);
+    }
+
+    public long getViews(String hash) {
+        String views = redisTemplate.opsForValue().get(VIEWS_KEY_PREFIX + hash);
+        return views != null ? Long.parseLong(views) : 0L;
+    }
+
+    public void updatePopularity(String hash) {
+        Optional<ContentMetadataEntity> entityOpt = contentMetadataRepository.findById(hash);
+        if (entityOpt.isPresent()) {
+            ContentMetadataEntity entity = entityOpt.get();
+            long views = getViews(hash);
+            double popularity = views * entity.getTrustScore();
+            entity.setPopularity(popularity);
+            contentMetadataRepository.save(entity);
+        }
+    }
+
+    public void updateTrustScore(String hash, double newTrustScore) {
+        Optional<ContentMetadataEntity> entityOpt = contentMetadataRepository.findById(hash);
+        if (entityOpt.isPresent()) {
+            ContentMetadataEntity entity = entityOpt.get();
+            entity.setTrustScore(newTrustScore);
+            contentMetadataRepository.save(entity);
+            updatePopularity(hash);
+        }
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\RedisService.java =====
+package com.content_indexing.app.service;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class RedisService {
+    private final RedisTemplate<String,String> redisTemplate;
+    private final ObjectMapper objectMapper;
+    public void set(String key, Object value, long ttlSeconds){
+        try{
+            redisTemplate.opsForValue().set(key,objectMapper.writeValueAsString(value), Duration.ofSeconds(ttlSeconds));
+        }
+        catch(Exception e){
+
+        }
+
+    }
+    public <T> T get(String key, Class<T> clazz) {
+        String json = redisTemplate.opsForValue().get(key);
+        if (json == null) return null;
+        try {
+            return objectMapper.readValue(json, clazz);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public <T> void setList(String key, List<T> value, long ttlSeconds) {
+        set(key, value, ttlSeconds);
+    }
+
+    public <T> List<T> getList(String key, Class<T> clazz) {
+        String json = redisTemplate.opsForValue().get(key);
+        if (json == null) return null;
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<T>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public long increment(String key) {
+        return redisTemplate.opsForValue().increment(key);
+    }
+
+    public long getLong(String key) {
+        String val = redisTemplate.opsForValue().get(key);
+        return val != null ? Long.parseLong(val) : 0;
+    }
+
+    public void setDouble(String key, double value) {
+        redisTemplate.opsForValue().set(key, String.valueOf(value));
+    }
+
+    public double getDouble(String key) {
+        String val = redisTemplate.opsForValue().get(key);
+        return val != null ? Double.parseDouble(val) : 0.0;
+    }
+
+    public void zadd(String key, double score, String member) {
+        redisTemplate.opsForZSet().add(key, member, score);
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\SearchMapper.java =====
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.entity.ContentMetadataEntity;
+import org.springframework.stereotype.Component;
+
+@Component
+public class SearchMapper {
+
+    public com.content_indexing.app.entity.search.ContentSearchDocument toDocument(ContentMetadataEntity entity) {
+        com.content_indexing.app.entity.search.ContentSearchDocument doc = new com.content_indexing.app.entity.search.ContentSearchDocument();
+        doc.setHash(entity.getHash());
+        doc.setTitle(entity.getTitle());
+        doc.setTags(entity.getTags());
+        doc.setMirrors(entity.getMirrors());
+        doc.setTrustScore(entity.getTrustScore());
+        doc.setPopularity(entity.getPopularity());
+        doc.setCreatedAt(entity.getCreatedAt());
+        return doc;
+    }
+}
+
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\SearchService.java =====
+// Java
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.dto.ContentMetadataResponseDto;
+import com.content_indexing.app.dto.SearchQueryDto;
+import com.content_indexing.app.entity.search.ContentSearchDocument;
+import com.content_indexing.app.repository.ContentSearchRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
+import org.springframework.data.elasticsearch.core.SearchHit;
+import org.springframework.data.elasticsearch.core.SearchHits;
+import org.springframework.data.elasticsearch.core.query.Criteria;
+import org.springframework.data.elasticsearch.core.query.CriteriaQuery;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class SearchService {
+
+    private final ContentSearchRepository searchRepository;
+    private final ElasticsearchOperations elasticsearchOperations;
+    private final RedisService redisService;
+
+    public List<ContentMetadataResponseDto> search(SearchQueryDto queryDto) {
+        String cacheKey = "search:" + queryDto.hashCode();
+
+        List<ContentMetadataResponseDto> cached =
+                redisService.getList(cacheKey, ContentMetadataResponseDto.class);
+        if (cached != null) {
+            return cached;
+        }
+
+        Criteria criteria = new Criteria("title").matches(queryDto.getQuery());
+        CriteriaQuery query = new CriteriaQuery(criteria)
+                .setPageable(PageRequest.of(0, 10));
+
+        SearchHits<ContentSearchDocument> hits =
+                elasticsearchOperations.search(query, ContentSearchDocument.class);
+
+        List<ContentMetadataResponseDto> results =
+                hits.getSearchHits()
+                        .stream()
+                        .map(SearchHit::getContent)
+                        .map(this::toDto)
+                        .toList();
+
+        redisService.setList(cacheKey, results, 300);
+        return results;
+    }
+
+    public ContentMetadataResponseDto getByHash(String hash) {
+        ContentSearchDocument doc = searchRepository.findById(hash)
+                .orElseThrow(() -> new RuntimeException("Content not found"));
+        return toDto(doc);
+    }
+
+    private ContentMetadataResponseDto toDto(ContentSearchDocument doc) {
+        ContentMetadataResponseDto dto = new ContentMetadataResponseDto();
+        dto.setHash(doc.getHash());
+        dto.setTitle(doc.getTitle());
+        dto.setTags(doc.getTags());
+        dto.setMirrors(doc.getMirrors());
+        dto.setPopularity(doc.getPopularity());
+        dto.setViews(redisService.getLong("views:" + doc.getHash()));
+        return dto;
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\main\java\com\content_indexing\app\service\UserDetailsServiceImpl.java =====
+package com.content_indexing.app.service;
+
+import com.content_indexing.app.entity.UserEntity;
+import com.content_indexing.app.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class UserDetailsServiceImpl implements UserDetailsService {
+
+    private final UserRepository userRepository;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        UserEntity user = userRepository.findByUsername(username).orElseThrow(() -> new UsernameNotFoundException("User not found"));
+        return org.springframework.security.core.userdetails.User.withUsername(user.getUsername()).password(user.getPassword()).authorities("USER").build();
+    }
+}
+
+===== FILE: C:\Users\Sriram\Downloads\app\app\src\test\java\com\content_indexing\app\AppApplicationTests.java =====
+package com.content_indexing.app;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+
+@SpringBootTest
+class AppApplicationTests {
+
+	@Test
+	void contextLoads() {
+	}
+
+}
+
