@@ -1,5 +1,6 @@
 A distributed backend system for submitting, indexing, searching, ranking, and moderating digital content using an event-driven architecture.
 Built with Spring Boot, Kafka, Elasticsearch, Redis, and PostgreSQL, and fully runnable via Docker Compose.
+   
 🔐 JWT-based authentication (register / login)
 
 📤 Content submission with optional file upload
